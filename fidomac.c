@@ -25,11 +25,13 @@ void startServer();
 void cmdLoop(int conn);
 unsigned char *runCmd(unsigned char *data, unsigned int len, unsigned int *oLen);
 int sendTransportResponse(unsigned char *m, unsigned char *data, unsigned int len);
+static unsigned char *commBuffer = NULL;
 
 // websocket forward declarations
-void doWsHandshake();
+int doWsHandshake(int conn);
 unsigned char *parseWsKey(const unsigned char *msg, unsigned int msgLen, unsigned int *oLen);
 unsigned char *calcSecKey(unsigned char *key, unsigned int keyLen, unsigned int *oLen);
+unsigned char *receiveWsMessage(int conn, unsigned int *oLen);
 void wsDecodeData (unsigned char *data, int len, unsigned char *mask);
 int sendWsResponse(unsigned char *data, unsigned long long len);
 
@@ -173,67 +175,32 @@ void startServer() {
  * the message will be passed to the appropriate authenticator
  */
 void cmdLoop(int conn) {
-    // create an arbitrarily large buffer for communications
-    unsigned char *buf = malloc (BUFFER_SZ);
-    if (buf == NULL) {
-        perror ("Couldn't allocate buffer");
+    // do WebSocket handshake
+    if (doWsHandshake (conn) < 0) {
+        printf ("WebSocket handshake failed\n");
         exit(-1);
     }
+    printf ("WebSocket handshake done.\n");
 
     // forever process incoming messages
-    int l;
+    unsigned int msgLen, respLen;
+    unsigned char *msg, *resp;
     while (1) {
-        l = recv (conn, buf, BUFFER_SZ, 0);
-        if (l < 0) {
-            perror ("Error receiving message");
+        // get a WebSocket message...
+        printf ("Waiting for message...\n");
+        msg = receiveWsMessage(conn, &msgLen);
+        if (msg == NULL) {
+            printf ("Error receiving WebSocket message\n");
             continue;
         }
-        printf ("Received %d bytes.\n", l);
-    }
+        printHex ("Got message", msg, msgLen);
 
-    // TODO: refactor into wsRecieveData() or something
-    //unsigned char testMsg[] = {0x81, 0x84, 0x9D, 0xA4, 0x01, 0x42, 0xE9, 0xC1, 0x72, 0x36};
-    unsigned char testMsg[] = {0x81, 0x8A, 0x00, 0x00, 0x00, 0x00, 0xF1, 0xD0, 0x01, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04};
-    ws_msg_t *ws = (ws_msg_t *) testMsg;
-    unsigned char *data;
-    unsigned long long len;
-    unsigned char *mask;
-    printf ("Op: %d\n", ws->op);
-    printf ("Len: %d\n", ws->len);
-    // TODO: someday handle continuations
-    if (ws->fin != 1) {
-        printf ("WebSocket continuation packets not supported.\n");
-        return;
+        // ...run the command in the message...
+        resp = runCmd (msg, msgLen, &respLen);
+
+        // ...send the response.
+        sendTransportResponse (msg, resp, respLen);
     }
-    // TODO: someday handle ping/pong, etc.
-    if (ws->op != 1 && ws->op != 2) {
-        printf ("Only WebSocket text and binary messages are supported\n");
-        return;
-    }
-    if (ws->len < 126) {
-        len = ws->len;
-        mask = ws->l.l7.mask;
-        data = ws->l.l7.data;
-    } else if (ws->len == 126) {
-        len = ws->l.l16.len; // TODO: ntohs
-        mask = ws->l.l16.mask;
-        data = ws->l.l16.data;
-    } else if (ws->len == 127) {
-        len = ws->l.l64.len;
-        mask = ws->l.l64.mask;
-        data = ws->l.l64.data; // TODO: ntohll
-    } else {
-        printf ("unknown length: %d\n", ws->len);
-        return;
-    }
-    printf ("Payload len: %llu\n", len);
-    printHex ("Mask", mask, 4);
-    printHex ("Payload", data, len);
-    wsDecodeData (data, len, mask);
-    unsigned char *ret;
-    unsigned int oLen;
-    ret = runCmd (data, len, &oLen);
-    sendTransportResponse (data, ret, oLen);
 }
 
 /**
@@ -333,42 +300,66 @@ int sendTransportResponse(unsigned char *m, unsigned char *data, unsigned int le
  * Does the WebSocket connection handshake
  * XXX: this probably doesn't perform well with severely malformated messages
  */
-void doWsHandshake() {
-    // TODO: read message from socket
-    char *testMsg = "GET /test HTTP/1.1\n" \
-                    "Host: localhost:8889\n" \
-                    "Connection: Upgrade\n" \
-                    "Pragma: no-cache\n" \
-                    "Cache-Control: no-cache\n" \
-                    "Upgrade: websocket\n" \
-                    "Origin: http://localhost:8888" \
-                    "Sec-WebSocket-Version: 13" \
-                    "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.71 Safari/537.36" \
-                    "Accept-Encoding: gzip, deflate, sdch, br" \
-                    "Accept-Language: en-US,en;q=0.8" \
-                    "Cookie: JingoSession=eyJmbGFzaCI6e319; JingoSession.sig=S3n_cgJ6jIpa50AhCKH52aRFo00; current-breadcrumb=%2523%252Badd-subscriber.jsp*\n" \
-                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\n" \
-                    "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\n\n";
-//                     "Sec-WebSocket-Key: xe7hanpDJIrpWpf6i8rA8w==\n" \
+int doWsHandshake(int conn) {
+    // an arbitrarily large buffer for getting WebSocket client handshake messages
+    if (commBuffer == NULL) {
+        commBuffer = malloc (COMM_BUFFER_SZ);
+    }
 
+    if (commBuffer == NULL) {
+        perror ("Couldn't allocate buffer");
+        return -1;
+    }
+
+    // wait for the handshake message...
+    int l;
+    l = recv (conn, commBuffer, COMM_BUFFER_SZ, 0);
+    if (l < 0) {
+        perror ("Error receiving message");
+        return -1;
+    }
+    printf ("Read %d bytes\n", l);
+    commBuffer[l] = 0;
+    printf ("Client WebSocket handshake message:\n\"%s\"\n", commBuffer);
+
+    // parse out the clients's security key
     unsigned int keyLen, serverKeyLen;
     unsigned char *key, *serverKey;
-    key = parseWsKey ((unsigned char *)testMsg, strlen (testMsg), &keyLen);
+    key = parseWsKey (commBuffer, COMM_BUFFER_SZ, &keyLen);
+    if (key == NULL) {
+        printf ("Couldn't parse WebSocket security key from client\n");
+        return -1;
+    }
     printf ("Key len: %d\n", keyLen);
     printf ("key: %.24s\n", key);
 
+    // create the server's security key for the response
     serverKey = calcSecKey (key, keyLen, &serverKeyLen);
     printf ("server key len: %d\n", serverKeyLen);
     printf ("server key: %s\n", serverKey);
 
+    // create and send server message
     char *serverMsg = "HTTP/1.1 101 Switching Protocols\n" \
                       "Upgrade: websocket\n" \
                       "Connection: Upgrade\n" \
                       "Sec-WebSocket-Accept: %s\n\n";
     printf ("Sending Message:");
-    // TODO: write serverMsg to socket
-    printf (serverMsg, serverKey);
+
+    l = snprintf ((char *)commBuffer, COMM_BUFFER_SZ, serverMsg, serverKey);
+    if (l < 0 || l > COMM_BUFFER_SZ) {
+        printf ("Failed to form WebSocket handshake response\n");
+        return -1;
+    }
+    printf ("Server message:\n\"%s\"\n", commBuffer);
+    int ret;
+    ret = send (conn, commBuffer, l, 0);
+    if (ret < 0) {
+        perror ("Sending WebSocket response");
+        return -1;
+    }
     free (serverKey);
+
+    return 0;
 }
 
 /**
@@ -400,7 +391,7 @@ unsigned char *parseWsKey(const unsigned char *msg, unsigned int msgLen, unsigne
             for (j = 0; j < (msgLen - i); j++) {
                 if (ret[j] == '\n') break;
             }
-            *oLen = j;
+            *oLen = --j;
             break;
         // } else {
             // printf ("no match at: %.20s\n", &msg[i]);
@@ -417,24 +408,25 @@ unsigned char *parseWsKey(const unsigned char *msg, unsigned int msgLen, unsigne
  * magic number, SHA-1 hashed, and then returned in base64 format
  */
 unsigned char *calcSecKey(unsigned char *key, unsigned int keyLen, unsigned int *oLen) {
-    const char *k = "dGhlIHNhbXBsZSBub25jZQ==";
+    // const char *k = "dGhlIHNhbXBsZSBub25jZQ==";
     // const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    const char *km = "dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    printf ("Key len %lu\n", strlen (k));
-    printf ("Key: %s\n", k);
+    // const char *km = "dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    // printf ("Key len %lu\n", strlen (k));
+    // printf ("Key: %s\n", k);
 
     // create a string that is a concatenation of key + magic string
     const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     int magicLen = strlen (magic);
     printf ("keyLen: %d\n", keyLen);
     printf ("magicLen: %d\n", magicLen);
+
     char buf[keyLen + magicLen];
     printf ("buf size: %lu\n", sizeof(buf));
     memcpy (buf, key, keyLen);
     printHex ("copied key", buf, sizeof(buf));
     memcpy (&buf[keyLen], magic, magicLen);
     printHex ("copied magic", buf, sizeof(buf));
-    printHex ("expect key+magic", km, strlen(km));
+    // printHex ("expect key+magic", km, strlen(km));
 
     // calculate the SHA1 hash of the key + magic string
     unsigned char hash[20];
@@ -449,6 +441,75 @@ unsigned char *calcSecKey(unsigned char *key, unsigned int keyLen, unsigned int 
     ret = base64_encode (hash, sizeof(hash), (size_t *)oLen);
 
     return ret;
+}
+
+unsigned char *receiveWsMessage(int conn, unsigned int *oLen) {
+    // create an arbitrarily large buffer for communications
+    if (commBuffer == NULL) {
+        commBuffer = malloc (COMM_BUFFER_SZ);
+    }
+
+    if (commBuffer == NULL) {
+        perror ("Couldn't allocate buffer");
+        return NULL;
+    }
+
+    // pull a message from a socket
+    int l;
+    l = recv (conn, commBuffer, COMM_BUFFER_SZ, 0);
+    if (l < 0) {
+        perror ("Error receiving message");
+        return NULL;
+    }
+    printf ("Received %d bytes.\n", l);
+
+    //unsigned char testMsg[] = {0x81, 0x84, 0x9D, 0xA4, 0x01, 0x42, 0xE9, 0xC1, 0x72, 0x36};
+    // unsigned char testMsg[] = {0x81, 0x8A, 0x00, 0x00, 0x00, 0x00, 0xF1, 0xD0, 0x01, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04};
+    ws_msg_t *ws = (ws_msg_t *) commBuffer;
+    unsigned char *data;
+    unsigned long long len;
+    unsigned char *mask;
+    printf ("Op: %d\n", ws->op);
+    printf ("Len: %d\n", ws->len);
+
+    // TODO: someday handle continuations
+    if (ws->fin != 1) {
+        printf ("WebSocket continuation packets not supported.\n");
+        return NULL;
+    }
+
+    // TODO: someday handle ping/pong, etc.
+    if (ws->op != 1 && ws->op != 2) {
+        printf ("Only WebSocket text and binary messages are supported\n");
+        return NULL;
+    }
+
+    // parse the message length
+    if (ws->len < 126) {
+        len = ws->len;
+        mask = ws->l.l7.mask;
+        data = ws->l.l7.data;
+    } else if (ws->len == 126) {
+        len = ws->l.l16.len; // TODO: ntohs
+        mask = ws->l.l16.mask;
+        data = ws->l.l16.data;
+    } else if (ws->len == 127) {
+        len = ws->l.l64.len;
+        mask = ws->l.l64.mask;
+        data = ws->l.l64.data; // TODO: ntohll
+    } else {
+        printf ("unknown length: %d\n", ws->len);
+        return NULL;
+    }
+    printf ("Payload len: %llu\n", len);
+    printHex ("Mask", mask, 4);
+    printHex ("Payload", data, len);
+
+    // apply the XOR mask to all the data to unscramble it
+    wsDecodeData (data, len, mask);
+
+    *oLen = len;
+    return data;
 }
 
 /**
@@ -525,7 +586,7 @@ void printHex(char *msg, const void *bufin, unsigned int len) {
          printf ("%.2X ", buf[i] & 0xFF);
          if (i && !((i+1)%16)) printf ("\n");
      }
-     if ((i+1)%16) printf ("\n");
+     if (i%16) printf ("\n");
 }
 
 char *transportTypeToName (int type) {

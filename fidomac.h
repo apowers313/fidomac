@@ -3,7 +3,7 @@
 
 // general configuration options
 #define SERVER_PORT 8889
-#define BUFFER_SZ 65536
+#define COMM_BUFFER_SZ 65536
 
 // I've made my own #defines for endianness here incase we need to configure them for various platforms
 // XXX TODO: not sure about these macros for MSVC
