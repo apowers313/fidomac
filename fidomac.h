@@ -6,12 +6,28 @@
 #define COMM_BUFFER_SZ 65536
 
 // I've made my own #defines for endianness here incase we need to configure them for various platforms
-// XXX TODO: not sure about these macros for MSVC
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-#define __LITTLE_ENDIAN
+#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+// #  pragma message("Detecting byte-ordering UNIX-style")
+#  if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#    define __LITTLE_ENDIAN
+#  endif
+#  if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#    define __BIG_ENDIAN
+#  endif
 #endif
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-#define __BIG_ENDIAN
+
+#if defined(__WIN32__) || defined (__WINDOWS__) || defined(_WIN32) || defined(OS_WINDOWS)
+#  include <Windows.h>
+// #  pragma message("Detecting byte-ordering Windows-style")
+#  if REG_DWORD == REG_DWORD_LITTLE_ENDIAN
+#    define __LITTLE_ENDIAN
+#  else
+#    define __BIG_ENDIAN
+#  endif
+#endif
+
+#if !defined(__LITTLE_ENDIAN) && !defined(__BIG_ENDIAN)
+#  error "Couldn't detect endianness: __BYTE_ORDER__ not defined"
 #endif
 
 /******************************************************************************
