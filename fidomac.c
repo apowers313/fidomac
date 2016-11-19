@@ -5,6 +5,7 @@
 #include <netinet/in.h> // for internet headers
 #include <arpa/inet.h> // for ntohs, etc
 #include <unistd.h> // for fork
+#include <sys/errno.h> // for ECONNRESET
 #include "fidomac.h"
 
 /******************************************************************************
@@ -24,16 +25,16 @@ void initModules();
 void startServer();
 void cmdLoop(int conn);
 unsigned char *runCmd(unsigned char *data, unsigned int len, unsigned int *oLen);
-int sendTransportResponse(unsigned char *m, unsigned char *data, unsigned int len);
+int sendTransportResponse(int conn, unsigned char *m, unsigned char *data, unsigned int len);
 static unsigned char *commBuffer = NULL;
 
 // websocket forward declarations
 int doWsHandshake(int conn);
 unsigned char *parseWsKey(const unsigned char *msg, unsigned int msgLen, unsigned int *oLen);
 unsigned char *calcSecKey(unsigned char *key, unsigned int keyLen, unsigned int *oLen);
-unsigned char *receiveWsMessage(int conn, unsigned int *oLen);
+unsigned char *receiveWsMessage(int conn, int *oLen);
 void wsDecodeData (unsigned char *data, int len, unsigned char *mask);
-int sendWsResponse(unsigned char *data, unsigned long long len);
+int sendWsResponse(int conn, unsigned char *data, unsigned long long len);
 
 // debugging tools forward declarations
 void printHex(char *msg, const void *bufin, unsigned int len);
@@ -183,14 +184,19 @@ void cmdLoop(int conn) {
     printf ("WebSocket handshake done.\n");
 
     // forever process incoming messages
-    unsigned int msgLen, respLen;
+    int msgLen;
+    unsigned int respLen;
     unsigned char *msg, *resp;
     while (1) {
         // get a WebSocket message...
         printf ("Waiting for message...\n");
         msg = receiveWsMessage(conn, &msgLen);
-        if (msg == NULL) {
+        if (msg == NULL && msgLen < 0) {
             printf ("Error receiving WebSocket message\n");
+            exit (-1);
+        }
+        if (msgLen == 0) {
+            printf ("Non-fatal error receiving WebSocket message\n");
             continue;
         }
         printHex ("Got message", msg, msgLen);
@@ -199,7 +205,7 @@ void cmdLoop(int conn) {
         resp = runCmd (msg, msgLen, &respLen);
 
         // ...send the response.
-        sendTransportResponse (msg, resp, respLen);
+        sendTransportResponse (conn, msg, resp, respLen);
     }
 }
 
@@ -248,7 +254,7 @@ unsigned char *runCmd(unsigned char *data, unsigned int len, unsigned int *oLen)
  *
  * Forms a transport response message, and then sends it via sendWsResponse()
  */
-int sendTransportResponse(unsigned char *m, unsigned char *data, unsigned int len) {
+int sendTransportResponse(int conn, unsigned char *m, unsigned char *data, unsigned int len) {
     transport_msg_t *msg = (transport_msg_t *)m;
     unsigned int l, respLen;
     if (data != NULL) l = len;
@@ -273,7 +279,7 @@ int sendTransportResponse(unsigned char *m, unsigned char *data, unsigned int le
     }
 
     int ret;
-    ret = sendWsResponse ((unsigned char *)resp, (unsigned long long)respLen);
+    ret = sendWsResponse (conn, (unsigned char *)resp, (unsigned long long)respLen);
     free (resp);
 
     return ret;
@@ -313,7 +319,12 @@ int doWsHandshake(int conn) {
 
     // wait for the handshake message...
     int l;
-    l = recv (conn, commBuffer, COMM_BUFFER_SZ, 0);
+    // l = recv (conn, commBuffer, COMM_BUFFER_SZ, 0);
+    l = read (conn, commBuffer, COMM_BUFFER_SZ);
+    if (l == -ECONNRESET) {
+        printf ("Connection closed\n");
+        exit(0);
+    }
     if (l < 0) {
         perror ("Error receiving message");
         return -1;
@@ -336,13 +347,16 @@ int doWsHandshake(int conn) {
     // create the server's security key for the response
     serverKey = calcSecKey (key, keyLen, &serverKeyLen);
     printf ("server key len: %d\n", serverKeyLen);
-    printf ("server key: %s\n", serverKey);
+    printf ("server key: \"%s\"\n", serverKey);
 
     // create and send server message
-    char *serverMsg = "HTTP/1.1 101 Switching Protocols\n" \
-                      "Upgrade: websocket\n" \
-                      "Connection: Upgrade\n" \
-                      "Sec-WebSocket-Accept: %s\n\n";
+    // char *serverMsg = "HTTP/1.1 101 Web Socket Protocol Handshake\n" \
+
+    char *serverMsg = "HTTP/1.1 101 Switching Protocols\r\n" \
+                      "Upgrade: websocket\r\n" \
+                      "Access-Control-Allow-Origin: http://localhost:8888\r\n" \
+                      "Sec-WebSocket-Accept: %s\r\n" \
+                      "Connection: Upgrade\r\n\r\n";
     printf ("Sending Message:");
 
     l = snprintf ((char *)commBuffer, COMM_BUFFER_SZ, serverMsg, serverKey);
@@ -443,7 +457,7 @@ unsigned char *calcSecKey(unsigned char *key, unsigned int keyLen, unsigned int 
     return ret;
 }
 
-unsigned char *receiveWsMessage(int conn, unsigned int *oLen) {
+unsigned char *receiveWsMessage(int conn, int *oLen) {
     // create an arbitrarily large buffer for communications
     if (commBuffer == NULL) {
         commBuffer = malloc (COMM_BUFFER_SZ);
@@ -451,20 +465,29 @@ unsigned char *receiveWsMessage(int conn, unsigned int *oLen) {
 
     if (commBuffer == NULL) {
         perror ("Couldn't allocate buffer");
+        *oLen = -1;
         return NULL;
     }
 
     // pull a message from a socket
     int l;
-    l = recv (conn, commBuffer, COMM_BUFFER_SZ, 0);
+    l = read (conn, commBuffer, COMM_BUFFER_SZ);
+    if (l == -ECONNRESET) {
+        printf ("Connection closed\n");
+        exit(0);
+    }
     if (l < 0) {
         perror ("Error receiving message");
+        *oLen = -1;
+        return NULL;
+    }
+    if (l == 0) {
+        printf ("Connection closed\n");
+        *oLen = -1;
         return NULL;
     }
     printf ("Received %d bytes.\n", l);
 
-    //unsigned char testMsg[] = {0x81, 0x84, 0x9D, 0xA4, 0x01, 0x42, 0xE9, 0xC1, 0x72, 0x36};
-    // unsigned char testMsg[] = {0x81, 0x8A, 0x00, 0x00, 0x00, 0x00, 0xF1, 0xD0, 0x01, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04};
     ws_msg_t *ws = (ws_msg_t *) commBuffer;
     unsigned char *data;
     unsigned long long len;
@@ -475,12 +498,16 @@ unsigned char *receiveWsMessage(int conn, unsigned int *oLen) {
     // TODO: someday handle continuations
     if (ws->fin != 1) {
         printf ("WebSocket continuation packets not supported.\n");
+        *oLen = 0;
         return NULL;
     }
 
     // TODO: someday handle ping/pong, etc.
-    if (ws->op != 1 && ws->op != 2) {
+    // 1 = text data, 2 = binary data, 8 = close
+    // TODO could probably add some #defines to make these more clear
+    if (ws->op != 1 && ws->op != 2 && ws->op != 8) {
         printf ("Only WebSocket text and binary messages are supported\n");
+        *oLen = 0;
         return NULL;
     }
 
@@ -499,6 +526,7 @@ unsigned char *receiveWsMessage(int conn, unsigned int *oLen) {
         data = ws->l.l64.data; // TODO: ntohll
     } else {
         printf ("unknown length: %d\n", ws->len);
+        *oLen = 0;
         return NULL;
     }
     printf ("Payload len: %llu\n", len);
@@ -507,6 +535,13 @@ unsigned char *receiveWsMessage(int conn, unsigned int *oLen) {
 
     // apply the XOR mask to all the data to unscramble it
     wsDecodeData (data, len, mask);
+
+    // close operation
+    if (ws->op == 8) {
+        printHex ("Got Close Request", data, len);
+        close (conn);
+        exit(0);
+    }
 
     *oLen = len;
     return data;
@@ -533,7 +568,7 @@ void wsDecodeData (unsigned char *data, int len, unsigned char *mask) {
  * forms the WebSocket response header and then sends that data
  * via the provided socket
  */
-int sendWsResponse(unsigned char *data, unsigned long long len) {
+int sendWsResponse(int conn, unsigned char *data, unsigned long long len) {
     if (data == NULL) return -1;
     printHex ("sending ws response", data, len);
 
@@ -558,7 +593,7 @@ int sendWsResponse(unsigned char *data, unsigned long long len) {
     }
     msg->fin = 1;
     msg->op = 2; // TODO: should be #define or enum
-    msg->mask = 0;
+    msg->mask = 1;
     msg->len = simpleLen;
     if (simpleLen == 126) {
         // TODO
@@ -567,12 +602,23 @@ int sendWsResponse(unsigned char *data, unsigned long long len) {
         // TODO
         printf ("!!! not implemented\n");
     } else {
-        // YOU LEFT OFF HERE
+        memset (msg->l.l7.mask, 0, 4);
+        // BAD! BAD NETWORK PROGRAMMER! NO COPIES!
+        memcpy (msg->l.l7.data, data, len);
     }
-    msg->mask = 0;
 
     printHex ("ws response msg", (unsigned char *)msg, wsLen);
-    // TODO: write message to socket
+    int ret;
+
+    unsigned char testMsg[] = {0x82, 0x04, 0x74, 0x65, 0x73, 0x74};
+    printHex ("SENDING TEST MESSAGE", testMsg, sizeof (testMsg));
+    printf ("Test message is %lu bytes\n", sizeof (testMsg));
+    ret = write (conn, testMsg, sizeof (testMsg));
+    printf ("Wrote %d bytes\n", ret);
+    if (ret < 0) {
+        perror ("Sending WebSocket response");
+        return -1;
+    }
 
     return 0;
 }
@@ -784,7 +830,7 @@ while (end - in >= 3) {
   in += 3;
   line_len += 4;
   if (line_len >= 72) {
-   *pos++ = '\n';
+   // *pos++ = '\n';
    line_len = 0;
   }
 }
@@ -804,7 +850,7 @@ if (end - in) {
 }
 
 if (line_len)
-  *pos++ = '\n';
+  // *pos++ = '\n';
 
 *pos = '\0';
 if (out_len)
