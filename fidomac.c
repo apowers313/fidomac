@@ -422,11 +422,11 @@ unsigned char *parseWsKey(const unsigned char *msg, unsigned int msgLen, unsigne
  * magic number, SHA-1 hashed, and then returned in base64 format
  */
 unsigned char *calcSecKey(unsigned char *key, unsigned int keyLen, unsigned int *oLen) {
+    // known good values, for future debugging
+    // borrowed from https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers
     // const char *k = "dGhlIHNhbXBsZSBub25jZQ==";
     // const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    // const char *km = "dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    // printf ("Key len %lu\n", strlen (k));
-    // printf ("Key: %s\n", k);
+    // const char *output = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
 
     // create a string that is a concatenation of key + magic string
     const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -457,6 +457,11 @@ unsigned char *calcSecKey(unsigned char *key, unsigned int keyLen, unsigned int 
     return ret;
 }
 
+/**
+ * receiveWsMessage
+ *
+ * reads a WebSocket message from a socket, verifies it, decodes it, and passes the data back
+ */
 unsigned char *receiveWsMessage(int conn, int *oLen) {
     // create an arbitrarily large buffer for communications
     if (commBuffer == NULL) {
@@ -514,16 +519,16 @@ unsigned char *receiveWsMessage(int conn, int *oLen) {
     // parse the message length
     if (ws->len < 126) {
         len = ws->len;
-        mask = ws->l.l7.mask;
-        data = ws->l.l7.data;
+        mask = ws->req_l7_mask;
+        data = ws->req_l7_data;
     } else if (ws->len == 126) {
-        len = ws->l.l16.len; // TODO: ntohs
-        mask = ws->l.l16.mask;
-        data = ws->l.l16.data;
+        len = ntohs(ws->req_l16_len);
+        mask = ws->req_l16_mask;
+        data = ws->req_l16_data;
     } else if (ws->len == 127) {
-        len = ws->l.l64.len;
-        mask = ws->l.l64.mask;
-        data = ws->l.l64.data; // TODO: ntohll
+        len = ntohll (ws->req_l64_len);
+        mask = ws->req_l64_mask;
+        data = ws->req_l64_data;
     } else {
         printf ("unknown length: %d\n", ws->len);
         *oLen = 0;
@@ -572,20 +577,20 @@ int sendWsResponse(int conn, unsigned char *data, unsigned long long len) {
     if (data == NULL) return -1;
     printHex ("sending ws response", data, len);
 
-    unsigned int adj; // number of bytes smaller than the max length
+    unsigned int headerSz; // size of the WebSocket header
     unsigned char simpleLen;
     if (len > 0xFFFF) {
         simpleLen = 127;
-        adj = 0;
+        headerSz = 8;
     } else if (len > 125) {
         simpleLen = 126;
-        adj = 5;
+        headerSz = 4;
     } else {
         simpleLen = len;
-        adj = 7;
+        headerSz = 2;
     }
-    unsigned int wsLen = len + sizeof (ws_msg_t) - adj;
-    printf ("wsLen: %d\n", wsLen);
+    unsigned int wsLen = len + headerSz;
+    printf ("%llu + %d = wsLen: %d\n", len, headerSz, wsLen);
     ws_msg_t *msg = malloc (wsLen);
     if (msg == NULL) {
         printf ("error allocating ws msg");
@@ -593,7 +598,7 @@ int sendWsResponse(int conn, unsigned char *data, unsigned long long len) {
     }
     msg->fin = 1;
     msg->op = 2; // TODO: should be #define or enum
-    msg->mask = 1;
+    msg->mask = 0;
     msg->len = simpleLen;
     if (simpleLen == 126) {
         // TODO
@@ -602,18 +607,21 @@ int sendWsResponse(int conn, unsigned char *data, unsigned long long len) {
         // TODO
         printf ("!!! not implemented\n");
     } else {
-        memset (msg->l.l7.mask, 0, 4);
         // BAD! BAD NETWORK PROGRAMMER! NO COPIES!
-        memcpy (msg->l.l7.data, data, len);
+        // where's a mbuf when you need one...?
+        printHex ("data", data, len);
+        memcpy (msg->resp_l7_data, data, len);
+        len += 2;
     }
 
     printHex ("ws response msg", (unsigned char *)msg, wsLen);
     int ret;
 
-    unsigned char testMsg[] = {0x82, 0x04, 0x74, 0x65, 0x73, 0x74};
-    printHex ("SENDING TEST MESSAGE", testMsg, sizeof (testMsg));
-    printf ("Test message is %lu bytes\n", sizeof (testMsg));
-    ret = write (conn, testMsg, sizeof (testMsg));
+    // unsigned char testMsg[] = {0x82, 0x04, 0x74, 0x65, 0x73, 0x74};
+    // printHex ("SENDING TEST MESSAGE", testMsg, sizeof (testMsg));
+    // printf ("Test message is %lu bytes\n", sizeof (testMsg));
+    // ret = write (conn, testMsg, sizeof (testMsg));
+    ret = write (conn, msg, len);
     printf ("Wrote %d bytes\n", ret);
     if (ret < 0) {
         perror ("Sending WebSocket response");
@@ -643,6 +651,8 @@ char *transportTypeToName (int type) {
         default: return "unknown";
     }
 }
+
+// XXX little endian only?
 
 // Code by: B-Con (http://b-con.us)
 // Released under the GNU GPL
@@ -849,7 +859,7 @@ if (end - in) {
   line_len += 4;
 }
 
-if (line_len)
+// if (line_len)
   // *pos++ = '\n';
 
 *pos = '\0';

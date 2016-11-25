@@ -16,7 +16,7 @@
 #  endif
 #endif
 
-#if defined(__WIN32__) || defined (__WINDOWS__) || defined(_WIN32) || defined(OS_WINDOWS)
+#if defined(__WIN32__) || defined (__WINDOWS__) || defined(_WIN32) || defined(OS_WINDOWS) || defined(_MSC_VER)
 #  include <Windows.h>
 // #  pragma message("Detecting byte-ordering Windows-style")
 #  if REG_DWORD == REG_DWORD_LITTLE_ENDIAN
@@ -26,8 +26,20 @@
 #  endif
 #endif
 
+// #ifdef __LITTLE_ENDIAN
+// #  define htonll(x) ((htonl((x) & 0xFFFFFFFF) << 32) | (htonl((x) >> 32)))
+// #  define ntohll(x) ((ntohl(((x) & 0xFFFFFFFF00000000) >> 32) | (ntohl((x) & 0xFFFFFFFF) << 32))
+// #else
+// #  define htonll(x) (x)
+// #  define ntohll(x) (x)
+// #endif
+
 #if !defined(__LITTLE_ENDIAN) && !defined(__BIG_ENDIAN)
 #  error "Couldn't detect endianness: __BYTE_ORDER__ not defined"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 /******************************************************************************
@@ -134,6 +146,8 @@ typedef struct {
                   len:7;
 #endif
     union {
+        // request message fields
+        // includes mask
         struct {
             unsigned char mask[4];
             unsigned char data[];
@@ -148,7 +162,40 @@ typedef struct {
             unsigned char mask[4];
             unsigned char data[];
         } l64;
+        // response message formats
+        // doesn't include mask field
+        // unsigned char resp_l7_data[];
+        // unsigned char data[];
+        unsigned char l7_data[1];
+        struct {
+            unsigned short len;
+            unsigned char data[];
+        } resp_l16;
+        struct {
+            unsigned long long len;
+            unsigned char data[];
+        } resp_l64;
     } l;
-} ws_msg_t; // TODO: alignment() rather than pragma pack()?
+} ws_msg_t; //__attribute__((packed, aligned(1)))
+#define req_l7_mask  l.l7.mask
+#define req_l7_data  l.l7.data
+#define req_l7_len   len
+#define req_l16_mask l.l16.mask
+#define req_l16_data l.l16.data
+#define req_l16_len  l.l16.len
+#define req_l64_mask l.l64.mask
+#define req_l64_data l.l64.data
+#define req_l64_len  l.l64.len
+
+#define resp_l7_data  l.l7_data
+#define resp_l7_len   len
+#define resp_l16_data l.resp_l16.data
+#define resp_l16_len  l.resp_l16.len
+#define resp_l64_data l.resp_l64.data
+#define resp_l64_len  l.resp_l64.len
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __FIDO_MAC_H */
