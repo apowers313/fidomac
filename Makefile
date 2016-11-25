@@ -30,8 +30,8 @@ libu2ftest:
 $(LIBU2FTEST): libu2ftest libu2ftest/HID/u2f_util.cc libu2ftest/HID/*.h libu2ftest/HID/Makefile
 	$(MAKE) -C libu2ftest/HID
 
-fidomac: fidomac.c fidomac.h dummy.c $(LIBU2FTEST)
-	gcc fidomac.c dummy.c -I. -o $@ $(LDFLAGS)
+fidomac: fidomac.c fidomac.h dummy.c usb.o $(LIBU2FTEST)
+	g++ $(CFLAGS) usb.o -I. -o $@ $(LDFLAGS) -x c fidomac.c dummy.c
 
-test: usb.cc $(LIBU2FTEST)
-	g++ $(CFLAGS) -o $@ usb.cc $(LDFLAGS)
+usb.o: usb.cc fidomac.h
+	g++ $(CFLAGS) -c usb.cc -o $@

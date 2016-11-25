@@ -1,6 +1,10 @@
 #ifndef __FIDO_MAC_H
 #define __FIDO_MAC_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // general configuration options
 #define SERVER_PORT 8889
 #define COMM_BUFFER_SZ 65536
@@ -38,15 +42,12 @@
 #  error "Couldn't detect endianness: __BYTE_ORDER__ not defined"
 #endif
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /******************************************************************************
  * FIDO AUTHENTICATOR CONTROLLER MODULES
  *
- * In order to add a new FIDO transport, simply define a new transport_module_t
- * and add it to the moduleList in fidomac.c
+ * In order to add a new FIDO transport, simply create an init function
+ * (module_init_func_t) that returns a module structure (transport_module_t)
+ * and add your init function to the initList at the top of fidomac.c
  *****************************************************************************/
 
 /**
@@ -60,11 +61,16 @@ typedef unsigned char *(*transport_cmd_func_t)(const unsigned char *data, unsign
 typedef struct {
     char *name;
     unsigned char type;
-    int (*init)();
+    // module_init_func_t init;
     void (*shutdown)();
     transport_cmd_func_t u2fCmd;
     transport_cmd_func_t extraCmds[];
 } transport_module_t;
+
+/**
+ * module_init_func_t - the generic function pointer type for the initialization function used by modules
+ */
+typedef transport_module_t *(*module_init_func_t)();
 
 /**
  * printHex -- in case anyone wants to borow my debug function?
@@ -72,7 +78,7 @@ typedef struct {
 void printHex(char *msg, const void *bufin, unsigned int len);
 
 // a helper for figuring out how many modules are defined
-#define moduleListSz ((sizeof (moduleList))/((sizeof (transport_module_t *))))
+#define initListSz ((sizeof (initList))/((sizeof (module_init_func_t))))
 
 /******************************************************************************
  * FIDO TRANSPORT PROTOCOL

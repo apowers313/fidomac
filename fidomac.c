@@ -9,16 +9,23 @@
 #include "fidomac.h"
 
 /******************************************************************************
- * MODULE LIST
+ * INIT LIST
  *
- * If you are defining your own authenticator transport, build your
- * transport_module_t elsewhere and then add it to the list here.
+ * If you are defining your own authenticator transport, add your init function
+ * to list below. It will be called and use the transport_module_t that it
+ * returns as the interface for sending / receiving packets.
  *****************************************************************************/
-extern transport_module_t dummyModule;
+// extern module_init_func_t dummyModuleInit;
+// extern transport_module_t *dummyModuleInit();
+extern transport_module_t *usbModuleInit();
 
-transport_module_t *moduleList[] = {
-    &dummyModule
+module_init_func_t initList[] = {
+    // dummyModuleInit,
+    usbModuleInit
 };
+
+static unsigned int moduleListSz = 0;
+static transport_module_t **moduleList = NULL;
 
 // internal forunction forward declarations
 void initModules();
@@ -26,6 +33,7 @@ void startServer();
 void cmdLoop(int conn);
 unsigned char *runCmd(unsigned char *data, unsigned int len, unsigned int *oLen);
 int sendTransportResponse(int conn, unsigned char *m, unsigned char *data, unsigned int len);
+// TODO: shutdownModules(): call shutdown functions and free moduleList and moduleList ptrs
 static unsigned char *commBuffer = NULL;
 
 // websocket forward declarations
@@ -78,7 +86,12 @@ int main() {
 
     // TODO: parse command line
     initModules();
+    if (moduleListSz < 1) {
+        printf ("No transport modules loaded. Maybe try plugging in a device?\n");
+        exit (0);
+    }
     startServer();
+    // TODO: background as daemon
 }
 
 /**
@@ -87,19 +100,31 @@ int main() {
  * Calls init() function on each module
  */
 void initModules() {
-    printf ("Loading %lu Modules...\n", moduleListSz);
+    printf ("Initializing %lu Modules...\n", initListSz);
     transport_module_t *mod;
     int i, type;
-    for (i = 0; i < moduleListSz; i++) {
-        mod = moduleList[i];
-        printf ("Loading %s (%d) driver: %s...\n", transportTypeToName(mod->type), mod->type, mod->name);
-        fflush (stdout);
-        if (mod->init()) {
-            // TODO: if this fails, it should be removed for the list or something
-            printf ("FAILED TO LOAD: (%s): %s\n", transportTypeToName(mod->type), mod->name);
+
+    // create the module list
+    // this might end up being a few bytes too big, but... oh well :)
+    moduleList = malloc (initListSz * sizeof (transport_module_t *));
+    if (!moduleList) {
+        perror ("Couldn't allocate module list");
+        exit(-1);
+    }
+
+    for (i = 0; i < initListSz; i++) {
+        mod = initList[i](); // call the init function
+        if (!mod) {
+            printf ("MODULE %d FAILED TO LOAD\n", i);
+            continue;
         } else {
             printf ("%s (%s) is loaded.\n", transportTypeToName(mod->type), mod->name);
         }
+
+        // add module to module list
+        moduleList[moduleListSz++] = mod;
+        // printf ("Loading %s (%d) driver: %s...\n", transportTypeToName(mod->type), mod->type, mod->name);
+        // fflush (stdout);
     }
 }
 

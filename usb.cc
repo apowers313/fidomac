@@ -18,14 +18,102 @@
 using namespace std;
 
 // globals
-struct U2Fob* device;
+static struct U2Fob* device;
+
+// external interfaces
+// usbModuleInit returns a transport_module_t that includes function pointers
+// to other interfaces
+// the main module is C, so we have to define the main interface as a C function so that it links right
+extern "C" transport_module_t *usbModuleInit();
+static unsigned char *usbDoCmd(const unsigned char *data, unsigned int len, unsigned int *oLen);
+static unsigned char *usbDoPing(const unsigned char *data, unsigned int len, unsigned int *oLen);
+static void usbShutdown();
+// internal helper functions
+static char *getDevicePath();
+
+transport_module_t *usbModuleInit() {
+    printf ("Initializing USB transport module\n");
+
+    char *devicePath = getDevicePath();
+    if (!devicePath) {
+        printf ("No USB Devices Found\n");
+        return NULL;
+    }
+    // printf ("Using device path: %s\n", devicePath);
+
+    // create our USB device
+    device = U2Fob_create();
+    U2Fob_open(device, devicePath);
+    free (devicePath);
+    U2Fob_init(device);
+
+    // this gets imported as a module in fidomac.c
+    transport_module_t *usbModule = (transport_module_t *)malloc (sizeof (transport_module_t));
+    if (!usbModule) {
+        perror ("Error allocating USB module");
+        exit (-1);
+    }
+
+    usbModule->name = (char *)"usb";
+    usbModule->type = TRANSPORT_USB;
+    usbModule->shutdown = usbShutdown;
+    usbModule->u2fCmd = usbDoCmd;
+
+    return usbModule;
+}
+
+static unsigned char *usbDoCmd(const unsigned char *data, unsigned int len, unsigned int *oLen) {
+    printf ("Dummy transport module doing a command\n");
+
+    // check arguments
+    if (data == NULL || len < 5) {
+        printf ("Bad data in usbDoCmd\n");
+        *oLen = -1;
+        return NULL;
+    }
+
+    string rsp;
+    unsigned int apduRet;
+
+    // send the raw message
+    apduRet = U2Fob_exchange_apdu_buffer (device, (char *)data, len, &rsp);
+
+    // format return values
+    unsigned long sz = rsp.size();
+    *oLen = sz + 2;
+    unsigned char *ret = (unsigned char *)malloc(sz + 2);
+    if (!ret) {
+        perror ("Couldn't allocate response");
+        exit (-1);
+    }
+    memcpy (ret, rsp.c_str(), sz);
+
+    // add the status code back to the end of the buffer
+    ret[sz] = (apduRet & 0xFF00) >> 8;
+    ret[sz+1] = apduRet & 0xFF;
+
+    return ret;
+}
+
+static unsigned char *usbDoPing(const unsigned char *data, unsigned int len, unsigned int *oLen) {
+    printf ("PING!");
+    // RUN WHATEVER SPECIAL COMMAND HERE
+    // printHex ((char *)"Ping data", data, len);
+    *oLen = len;
+    return (unsigned char *)data;
+}
+
+static void usbShutdown() {
+    printf ("Shutting down USB transport module\n");
+    U2Fob_destroy(device);
+}
 
 /**
  * getDevicePath
  *
  * Finds a device with a 0xF1D0 usage page and returns it's path to be used as the test device
  */
-char *getDevicePath() {
+static char *getDevicePath() {
 // Enumerate and print the HID devices on the system
     struct hid_device_info *devs, *cur_dev;
     char *device_path = NULL;
@@ -66,79 +154,6 @@ char *getDevicePath() {
 
     return (device_path);
 }
-
-int dummyInit() {
-    printf ("Initializing dummy transport module\n");
-
-    char *devicePath = getDevicePath();
-    // printf ("Using device path: %s\n", devicePath);
-
-    // create our USB device
-    device = U2Fob_create();
-    U2Fob_open(device, devicePath);
-    free (devicePath);
-    U2Fob_init(device);
-
-    return 0;
-}
-
-void dummyShutdown() {
-    printf ("Shutting down dummy transport module\n");
-    U2Fob_destroy(device);
-}
-
-unsigned char *usbDoCmd(char *data, unsigned int len, unsigned int *oLen) {
-    printf ("Dummy transport module doing a command\n");
-
-    // check arguments
-    if (data == NULL || len < 5) {
-        printf ("Bad data in usbDoCmd\n");
-        *oLen = -1;
-        return NULL;
-    }
-
-    string rsp;
-    unsigned int apduRet;
-
-    // send the raw message
-    apduRet = U2Fob_exchange_apdu_buffer (device, data, len, &rsp);
-
-    // format return values
-    unsigned long sz = rsp.size();
-    *oLen = sz + 2;
-    unsigned char *ret = (unsigned char *)malloc(sz + 2);
-    if (!ret) {
-        perror ("Couldn't allocate response");
-        exit (-1);
-    }
-    memcpy (ret, rsp.c_str(), sz);
-
-    // add the status code back to the end of the buffer
-    ret[sz] = (apduRet & 0xFF00) >> 8;
-    ret[sz+1] = apduRet & 0xFF;
-
-    return ret;
-}
-
-unsigned char *dummyDoPing(const unsigned char *data, unsigned int len, unsigned int *oLen) {
-    printf ("PING!");
-    // RUN WHATEVER SPECIAL COMMAND HERE
-    // printHex ((char *)"Ping data", data, len);
-    *oLen = len;
-    return (unsigned char *)data;
-}
-
-// this gets imported as a module in fidomac.c
-// transport_module_t dummyModule = {
-//     (char *)"dummy",
-//     TRANSPORT_USB,
-//     dummyInit,
-//     dummyShutdown,
-//     usbDoCmd,
-//     // {
-//     //     dummyDoPing
-//     // }
-// };
 
 // debugging stuff
 /* void printHex(char *msg, const void *bufin, unsigned int len) {
