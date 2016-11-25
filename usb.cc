@@ -97,44 +97,27 @@ unsigned char *usbDoCmd(char *data, unsigned int len, unsigned int *oLen) {
         return NULL;
     }
 
-    // massage data into the format that the U2F USB API expects
-    uint8_t CLA, INS, P1, P2;
-    CLA = data[0];
-    INS = data[1];
-    P1 = data[2];
-    P2 = data[3];
-
     string rsp;
     unsigned int apduRet;
 
-    // apduRet = U2Fob_apdu(device, CLA, INS, P1, P2,
-    //            string(reinterpret_cast<char*>(&data[4]), (len - 4)),
-    //            &rsp);
-    // cout << "Sign: " << rsp.size() << " bytes in reply:" << rsp;
+    // send the raw message
+    apduRet = U2Fob_exchange_apdu_buffer (device, data, len, &rsp);
 
-    // U2F_REGISTER_REQ regReq;
-    // for (size_t i = 0; i < sizeof(regReq.nonce); ++i)
-    //     regReq.nonce[i] = rand();
-    // for (size_t i = 0; i < sizeof(regReq.appId); ++i)
-    //     regReq.appId[i] = rand();
-    // apduRet = U2Fob_apdu(device, 0, U2F_INS_REGISTER, U2F_AUTH_ENFORCE, 0,
-    //                   string(reinterpret_cast<char*>(&regReq), sizeof(regReq)),
-    //                   &rsp);
+    // format return values
+    unsigned long sz = rsp.size();
+    *oLen = sz + 2;
+    unsigned char *ret = (unsigned char *)malloc(sz + 2);
+    if (!ret) {
+        perror ("Couldn't allocate response");
+        exit (-1);
+    }
+    memcpy (ret, rsp.c_str(), sz);
 
-    char d[3] = {0x00, 0x00, 0x00};
-    apduRet = U2Fob_apdu(device, 0, 3, 0, 0,
-                      string(d),
-                      &rsp);
+    // add the status code back to the end of the buffer
+    ret[sz] = (apduRet & 0xFF00) >> 8;
+    ret[sz+1] = apduRet & 0xFF;
 
-    printf ("U2Fob_apdu returned: 0x%X\n", apduRet);
-    unsigned long blah = rsp.size();
-    printf ("Response is %lu bytes\n", blah);
-    *oLen = blah;
-    unsigned char *ret = (unsigned char *)malloc(blah);
-    memcpy (ret, rsp.c_str(), blah);
     return ret;
-
-    // return NULL;
 }
 
 unsigned char *dummyDoPing(const unsigned char *data, unsigned int len, unsigned int *oLen) {
@@ -158,7 +141,7 @@ unsigned char *dummyDoPing(const unsigned char *data, unsigned int len, unsigned
 // };
 
 // debugging stuff
-void printHex(char *msg, const void *bufin, unsigned int len) {
+/* void printHex(char *msg, const void *bufin, unsigned int len) {
     if (msg == NULL || bufin == NULL) return;
     const unsigned char *buf = (const unsigned char *)bufin;
     int i;
@@ -177,11 +160,21 @@ int main() {
     // U2F version message
     char data[] = {0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00};
     // enroll message
-    // 000103000000400AD6F04AC74397B448E25B62EB5210FF0585CD7C0F56AA2033D07A20AEA80955CD63A077A3366AED8BA29D261D34AE41FCEBA8D41ED13319AE65477264B4F4020000
+    // char data[] = {
+    //     0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x40, 0x0A,
+    //     0xD6, 0xF0, 0x4A, 0xC7, 0x43, 0x97, 0xB4, 0x48,
+    //     0xE2, 0x5B, 0x62, 0xEB, 0x52, 0x10, 0xFF, 0x05,
+    //     0x85, 0xCD, 0x7C, 0x0F, 0x56, 0xAA, 0x20, 0x33,
+    //     0xD0, 0x7A, 0x20, 0xAE, 0xA8, 0x09, 0x55, 0xCD,
+    //     0x63, 0xA0, 0x77, 0xA3, 0x36, 0x6A, 0xED, 0x8B,
+    //     0xA2, 0x9D, 0x26, 0x1D, 0x34, 0xAE, 0x41, 0xFC,
+    //     0xEB, 0xA8, 0xD4, 0x1E, 0xD1, 0x33, 0x19, 0xAE,
+    //     0x65, 0x47, 0x72, 0x64, 0xB4, 0xF4, 0x02, 0x00,
+    //     0x00};
     unsigned int len = sizeof (data);
     char *ret;
     ret = (char *)usbDoCmd (data, len, &len);
     printHex ((char *)"response",ret, len);
 
     dummyShutdown();
-}
+} */
