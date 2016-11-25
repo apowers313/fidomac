@@ -1,2 +1,7 @@
 a.out
 fidomac
+libu2ftest
+*.o
+test.c
+test.cc
+test
