@@ -64,7 +64,7 @@ typedef struct {
     // module_init_func_t init;
     void (*shutdown)();
     transport_cmd_func_t u2fCmd;
-    transport_cmd_func_t extraCmds[];
+    transport_cmd_func_t transportCmd;
 } transport_module_t;
 
 /**

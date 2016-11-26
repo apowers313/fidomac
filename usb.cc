@@ -57,7 +57,7 @@ transport_module_t *usbModuleInit() {
     usbModule->name = (char *)"usb";
     usbModule->type = TRANSPORT_USB;
     usbModule->shutdown = usbShutdown;
-    usbModule->u2fCmd = usbDoCmd;
+    usbModule->u2fCmd = reinterpret_cast<transport_cmd_func_t>(usbDoCmd);
 
     return usbModule;
 }

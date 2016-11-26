@@ -243,6 +243,7 @@ void cmdLoop(int conn) {
 unsigned char *runCmd(unsigned char *data, unsigned int len, unsigned int *oLen) {
     transport_msg_t *msg = (transport_msg_t *)data;
     transport_module_t *mod;
+    transport_cmd_func_t cmd = NULL;
     unsigned short l = ntohs (msg->len);
 
     // validate header
@@ -261,11 +262,20 @@ unsigned char *runCmd(unsigned char *data, unsigned int len, unsigned int *oLen)
     unsigned char *ret;
     for (i = 0; i < moduleListSz; i++) {
         mod = moduleList[i];
+
+        // if this message is for a different type of transport, skip this module
         if (mod->type != msg->transport) continue;
+
+        // pick which kind of command it is
         if (msg->cmd == 0) {
-            return mod->u2fCmd(msg->payload, l, oLen);
+            cmd = mod->u2fCmd;
         } else {
-            return mod->extraCmds[msg->cmd-1](msg->payload, l, oLen);
+            cmd = mod->transportCmd;
+        }
+
+        // if we found a command, call it and return the value
+        if (cmd != NULL) {
+            return cmd(msg->payload, l, oLen);
         }
     }
 
